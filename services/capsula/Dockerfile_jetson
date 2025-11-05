@@ -1,0 +1,50 @@
+FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0 AS nvidia-l4t
+
+# Set the working directory to /app
+WORKDIR /app
+
+# Copy the requirements file into the container at /app
+COPY requirements.txt .
+
+# Actualiza los paquetes del sistema e instala las dependencias necesarias
+RUN apt-get update && apt-get install -y \
+	pkg-config \
+	build-essential \
+	cmake \
+	wget \
+	libffi-dev \
+	libopenblas-base \
+	libopenmpi-dev \
+	libomp-dev \
+	libcudnn9-cuda-12 \
+	libcudnn9-dev-cuda-12 \
+	libcupti-dev \
+	python3-pip \
+	libcudnn9-dev-cuda-12 \ 
+	&& apt-get clean
+ 
+RUN python3 -m pip install --upgrade pip
+    
+
+# Descargar Torch, Torchaudio y Torchvision para Jetpack6 L4T R36.4 con CUDA
+# estos wheels solo funcionan con Python versión 3.10
+RUN wget https://github.com/ultralytics/assets/releases/download/v0.0.0/torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl -O /tmp/torch-2.5.0-cp310-cp310-linux_aarch64.whl
+RUN wget https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.20.0a0+afc54f7-cp310-cp310-linux_aarch64.whl -O /tmp/torchvision-0.20.0-cp310-cp310-linux_aarch64.whl
+
+#Descargar onnxruntime-gpu Jetsons
+RUN wget https://github.com/ultralytics/assets/releases/download/v0.0.0/onnxruntime_gpu-1.20.0-cp310-cp310-linux_aarch64.whl -O /tmp/onnxruntime_gpu-1.20.0-cp310-cp310-linux_aarch64.whl
+
+RUN pip3 install wheel
+RUN pip3 install /tmp/*.whl
+RUN rm /tmp/*.whl
+
+RUN wget https://developer.download.nvidia.com/compute/cusparselt/0.8.1/local_installers/cusparselt-local-tegra-repo-ubuntu2204-0.8.1_0.8.1-1_arm64.deb
+RUN dpkg -i cusparselt-local-tegra-repo-ubuntu2204-0.8.1_0.8.1-1_arm64.deb
+RUN cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.8.1/cusparselt-*-keyring.gpg /usr/share/keyrings/
+RUN apt-get update && apt-get -y install cusparselt-cuda-12
+
+
+# Install the required packages
+RUN pip3 install --no-cache-dir -r requirements.txt
+# Expose port 8000 for the application
+EXPOSE 8080

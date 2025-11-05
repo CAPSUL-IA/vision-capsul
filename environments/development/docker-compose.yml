@@ -1,0 +1,21 @@
+
+services:
+  # Python interpreter for development and testing purposes
+  capsule:
+    container_name: capsule_dev
+    build: 
+      context: ../../services/capsula
+      dockerfile: Dockerfile_jetson
+      shm_size: '32gb'
+    shm_size: '32gb'
+    runtime: nvidia
+    restart: "no"
+    env_file:
+      - ../../environments/development/.env
+    volumes:
+      - ../../services/capsula/:/app
+      - ../../../crowdhuman/data/:/app/data
+      - ../../services/vscode/:/root/.vscode-server/extensions
+    # Keep the container running
+    command: tail -f /dev/null
+    # CUDA support https://docs.docker.com/compose/gpu-support/

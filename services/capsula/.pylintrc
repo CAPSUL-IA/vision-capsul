@@ -1,0 +1,11 @@
+[FORMAT]
+
+max-line-length=120
+
+[DESIGN]
+
+# Maximum number of statements in function / method body.
+max-statements=25
+
+[MASTER]
+ignore=venv,env,__pycache__,docs,site
