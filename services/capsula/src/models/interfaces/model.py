@@ -4,6 +4,8 @@ import pandas as pd
 from abc import ABCMeta, abstractmethod
 from tqdm import tqdm
 from torch.utils.data import DataLoader
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 
 class IModel(metaclass=ABCMeta):
     def __init__(self, model, optimizer=None, criterion=None, scheduler=None):
@@ -15,6 +17,22 @@ class IModel(metaclass=ABCMeta):
     @abstractmethod
     def load_model(self):
         pass
+
+    def generate_confusion_matrix(self, all_outputs, all_labels):
+        predicted = torch.max(all_outputs, 1)[1]
+        labels = all_labels.argmax(dim=1)
+        
+        cm = confusion_matrix(labels.cpu().numpy(), predicted.cpu().numpy())
+
+        class_names = [k for k, v in sorted(self.label_encoding.items(), key=lambda x: x[1])]
+
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+        disp.plot(cmap='Blues', values_format='d')
+        plt.title('Confusion Matrix')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.path,'confusion_matrix.png'), dpi=300, bbox_inches='tight')
+        plt.close()
 
     def run_batch(self, dataloader, is_eval: bool):
         """
@@ -73,7 +91,12 @@ class IModel(metaclass=ABCMeta):
         all_labels = torch.cat(all_labels)
 
         if not self.multilabel or not is_eval:
-            return correct / total if is_eval else epoch_loss / total
+            #Métricas de evaluación
+            if is_eval:
+                self.generate_confusion_matrix(all_outputs, all_labels)
+                return correct / total 
+            #Perdida de entrenamiento
+            return epoch_loss / total
 
         predictions = (torch.sigmoid(all_outputs) > 0.5).float()
         
@@ -103,8 +126,9 @@ class IModel(metaclass=ABCMeta):
         Args:
             dataset (Dataset): The dataset for training the model.
         """
-        os.makedirs("models/classificator", exist_ok=True)
-        save_path = "models/classificator/last_model"
+        os.makedirs(self.path, exist_ok=True)
+        best_model_path = os.path.join(self.path,"best_model") 
+        last_model_path = os.path.join(self.path,"last_model")
         epochs = self.epochs
         batch = self.batch_size
         train_dataloader = DataLoader(dataset.train,
@@ -112,14 +136,15 @@ class IModel(metaclass=ABCMeta):
         val_dataloader = DataLoader(dataset.val,
                                     batch_size=batch)
 
-        best_val_metric, best_epoch = 0.0, 0
+        best_val_metric, best_epoch, not_improve = 0.0, 0, 0
         metrics = []
         for epoch in range(epochs):
-            # train
             print(f"\nEpoch {epoch+1} of {epochs}")
             train_loss = self.run_batch(dataloader=train_dataloader,is_eval=False)
+            
             print(f"Perdida: {train_loss}\n")
             val_metrics = self.run_batch(dataloader=val_dataloader,is_eval=True)
+            
             if not self.multilabel:
                 val_metric = val_metrics
                 print(f"Precision: {val_metric}\n")
@@ -139,23 +164,34 @@ class IModel(metaclass=ABCMeta):
                     "val_f1": val_metrics["f1"]
                 })
             if val_metric > best_val_metric:
+                not_improve = 0
                 best_val_metric = val_metric
                 best_epoch = epoch
-            # Here some similar for eval...
-            self.scheduler.step()
-        print(f"Mejor precision de {best_val_metric} en la epoch {best_epoch}")
-        
-        df = pd.DataFrame(metrics)
-        df.to_csv("models/classificator/metrics.csv", index=False)
 
-        # Save last epoch model
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'class_encoding':self.label_encoding,
-            'img_size':self.img_size,
-            'model_name':self.model_name,
-            'pretrained':self.pretrained,
-            'batch_size':self.batch_size,
-            'multilabel':self.multilabel},
-            save_path)
+                self.save_path(best_model_path)
+                
+            else:
+                not_improve += 1
+                if self.patience and not_improve >= self.patience:
+                    break
+            
+            self.scheduler.step()
+       
+        self.save_path(last_model_path)
+
+        df = pd.DataFrame(metrics)
+        df.to_csv(os.path.join(self.path,"metrics.csv"), index=False)
+
+        print("\nValidación del mejor modelo:")
+        checkpoint = torch.load(best_model_path, weights_only=False)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.eval()
+
+        final_val_metrics = self.run_batch(dataloader=val_dataloader, is_eval=True)
+        print("Resultados finales:")
+        if not self.multilabel:
+            print(f"Precision: {final_val_metrics}")
+        else:
+            print(f"Precision:  {final_val_metrics['precision']}")
+            print(f"Recall: {final_val_metrics['recall']}")
+            print(f"F1 Score: {final_val_metrics['f1']}")

@@ -6,6 +6,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 from src.models.interfaces.model import IModel
 from src.utils.utils import RunParser
 
+from datetime import datetime
+
 class ClassificationTimmModel(IModel):
     """
     Initializes the classification model with the given configuration,
@@ -41,6 +43,8 @@ class ClassificationTimmModel(IModel):
             self.optimizer = self.load_optimizer(cfg.optim)
             self.epochs = int(cfg.epoch)
             self.scheduler = self.load_scheduler(cfg.scheduler)
+            self.patience = int(cfg.patience) if cfg.patience is not None else None
+            self.path = "models/classificator" if cfg.overwrite else f"models/classificator_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             super().__init__(model=self.model, 
                          optimizer=self.optimizer, 
                          criterion=self.criterion,
@@ -135,21 +139,20 @@ class ClassificationTimmModel(IModel):
                                           'min')
         return scheduler
     
+    def save_path(self, path):
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'class_encoding': self.label_encoding,
+            'img_size': self.img_size,
+            'model_name': self.model_name,
+            'pretrained': self.pretrained,
+            'batch_size': self.batch_size,
+            'multilabel': self.multilabel
+        }, path)
+
+
     def train(self, dataset):
         super().train(dataset=dataset)
 
-def build_classi_metrics_dic() -> dict:
-    """
-    Function to build a dictionary where store
-    train/eval evolution of classification metrics.
-    Returns:
-        Dictionary with metrics information
-    """
-    metrics = ["accuracy", "f1_score", "roc_auc"]
-    dic = {"train_loss": []}
-    for m in metrics:
-        dic[m] = {"train_values": [],
-                  "test_values": [],
-                  "best_test_epoch": None,
-                  "best_test_val": None}
-    return dic
+
