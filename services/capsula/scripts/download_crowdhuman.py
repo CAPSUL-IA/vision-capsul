@@ -77,7 +77,7 @@ if os.path.exists("crowdhuman.zip"):
     os.remove("crowdhuman.zip")
 
 label2id =  {
-        0: "person"
+        "person": 0
     }
 
 with open('data/label2id.json', 'w') as f:

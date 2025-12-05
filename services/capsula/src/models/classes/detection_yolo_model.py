@@ -12,6 +12,7 @@ from src.process.data_process import build_data_aug_dic
 from src.models.interfaces.model import IModel
 from src.utils.utils import RunParser, load_devices
 
+import warnings
 
 class DetectionYoloModel(IModel):
     """
@@ -67,6 +68,9 @@ class DetectionYoloModel(IModel):
         self.is_grayscale = None
         self.data_augmentation = None
         self.overwrite = cfg.overwrite
+        self.amp = cfg.amp
+        self.fraction = float(cfg.fraction)
+        self.int8, self.float16 = self.get_quantize(cfg.quantize)
 
     def load_model(self):
         """
@@ -114,10 +118,23 @@ class DetectionYoloModel(IModel):
                          name=name,
                          device=devices,
                          iou=0.5,
+                         amp=self.amp,
+                         fraction = self.fraction,
                          **self.data_augmentation)
         
-        self.model.export(format='onnx', imgsz=self.img_size, dynamic=True)
-    
+        self.model.export(format='onnx', int8=self.int8, half=self.float16, imgsz=self.img_size, dynamic=True)
+   
+    def get_quantize(self, quantize):
+        if quantize == "int8":
+            return True, False
+        elif quantize == "float16":
+            return False, True
+        else:
+            warnings.warn(
+                "The model has not been quantized. Only int8 or float16 quantization is supported.",
+                UserWarning
+            )
+            return False, False
 
     def inference(self, data: list):
         """

@@ -1,12 +1,23 @@
+import os
 import timm
 import torch
 from torch.optim import AdamW, Adam, SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 
+import onnx
+from onnxconverter_common import float16
+from onnxruntime.quantization import quantize_dynamic, QuantType, preprocess
+
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+import matplotlib.pyplot as plt
+
 from src.models.interfaces.model import IModel
 from src.utils.utils import RunParser
 
 from datetime import datetime
+
+import warnings
 
 class ClassificationTimmModel(IModel):
     """
@@ -36,6 +47,8 @@ class ClassificationTimmModel(IModel):
         self.model = self.load_model(self.num_classes, checkpoint, is_inference)
         self.batch_size = int(cfg.batch) if not is_inference else int(checkpoint['batch_size']) 
         self.multilabel = cfg.multilabel if not is_inference else int(checkpoint['multilabel']) 
+        self.amp = cfg.amp
+        self.quantize = cfg.quantize
         if not is_inference:
             self.img_size = cfg.img_size
             self.criterion = self.load_criterion()
@@ -155,4 +168,122 @@ class ClassificationTimmModel(IModel):
     def train(self, dataset):
         super().train(dataset=dataset)
 
+    def get_metrics_eval(self, val_metrics, epoch, train_loss):
+        if not self.multilabel:
+            val_metric = val_metrics['precision']
+            print(f"Precision: {val_metric}\n")
+            return {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "val_accuracy": val_metric
+            }, val_metric
+        else:
+            val_metric = val_metrics["f1"]
+            print(f"F1 Score: {val_metric}\n")
+            return {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "val_precision": val_metrics["precision"],
+                "val_recall": val_metrics["recall"],
+                "val_f1": val_metrics["f1"]
+            }, val_metric
 
+
+    def generate_confusion_matrix(self, all_outputs, all_labels):
+        predicted = torch.max(all_outputs, 1)[1]
+        labels = all_labels.argmax(dim=1)
+
+        cm = confusion_matrix(labels.cpu().numpy(), predicted.cpu().numpy())
+
+        class_names = [k for k, v in sorted(self.label_encoding.items(), key=lambda x: x[1])]
+
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+        disp.plot(cmap='Blues', values_format='d')
+        plt.title('Confusion Matrix')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.path,'confusion_matrix.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def calculate_metrics_eval(self, all_outputs, all_labels):
+        if not self.multilabel:
+            _, predicted = torch.max(all_outputs, 1)
+            labels = all_labels.argmax(dim=1)
+
+            correct = (predicted == labels).sum().item()
+
+            self.generate_confusion_matrix(all_outputs, all_labels)
+
+            return {'precision': correct / len(labels)}
+        else:
+            predictions = (torch.sigmoid(all_outputs) > 0.5).float()
+
+            tp = (predictions * all_labels).sum().item()
+            fp = (predictions * (1 - all_labels)).sum().item()
+            fn = ((1 - predictions) * all_labels).sum().item()
+
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+            return {'precision': precision, 'recall': recall, 'f1': f1}
+
+    def show_results(self, metrics):
+        print("Resultados finales:")
+        if not self.multilabel:
+            print(f"Precision: {metrics['precision']}")
+        else:
+            print(f"Precision:  {metrics['precision']}")
+            print(f"Recall: {metrics['recall']}")
+            print(f"F1 Score: {metrics['f1']}")
+
+    def export_to_onnx(self, model):
+        onnx_path = os.path.join(self.path,"model.onnx")
+        dummy_input = torch.randn(1, 3, int(self.img_size), int(self.img_size))
+        torch.onnx.export(
+            model.cpu(),
+            dummy_input.cpu(),
+            onnx_path,
+            export_params=True,
+            opset_version=13,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+        )
+
+        if self.quantize:
+            self.quantize_model(onnx_path)
+
+    def quantize_model(self, onnx_path):
+        quantize_path = os.path.join(self.path, "model_quantize.onnx")
+        if self.quantize == "int8":
+            preprocess.quant_pre_process(
+                input_model_path=onnx_path,
+                output_model_path=quantize_path,
+                skip_optimization=False, 
+                skip_onnx_shape=False,
+                skip_symbolic_shape=False,
+                auto_merge=True,
+            )
+
+            quantize_dynamic(
+                quantize_path,
+                quantize_path,
+                weight_type=QuantType.QInt8
+            )
+
+            print("Model quantized to INT8 saved.") 
+            
+        elif self.quantize == "float16":
+            model = onnx.load(onnx_path)
+            
+            model_fp16 = float16.convert_float_to_float16(model)
+
+            onnx.save(model_fp16, quantize_path)
+            print("Model quantized to float16 saved.") 
+            
+        else:
+            warnings.warn(
+                "The model has not been quantized. Only int8 or float16 quantization is supported.",
+                UserWarning
+            )

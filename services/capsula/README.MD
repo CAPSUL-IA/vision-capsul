@@ -214,7 +214,8 @@ Los valores **booleanos** aceptan los valores `1 | yes | true | on | 0 | no | fa
 
 ### [Images]
 * **Size**: Define el tamaño de las imágenes (altura y anchura en píxeles) que se utilizarán para el
-entrenamiento y la evaluación. Si no se especifica, el valor por defecto está establecido en 256x256.
+entrenamiento y la evaluación. Si no se especifica, el valor por defecto está establecido en 256.
+* **Fraction**: Define la partición de datos que se va a usar para el entrenamiento, siendo 1.0 el dataset completo y 0.1 un 10%.
 
 ### [Model]
 
@@ -228,7 +229,7 @@ en python:
 import timm
 from pprint import pprint
 model_names = timm.list_models(pretrained=True)
-pprint(model_names)
+print(model_names)
 ~~~
 
 Para la cápsula encargada de la detección de imágenes se han utilizados los modelos [YOLO](https://docs.ultralytics.com/es/models/).
@@ -240,6 +241,10 @@ Para la cápsula encargada de la detección de imágenes se han utilizados los m
 ### [ModelParams]
 * **Pretrained** (booleano): En caso de que sea configurable como en el caso de los modelos de la biblioteca `timm`, este parámetro especifica si utilizar el modelo con pesos preentrenados o no.
 * **Overwrite** (booleano): Especifica si, al ejecutar un nuevo entrenamiento, conservar un modelo existente anterior o sobreescribirlo.
+* **Amp** (booleano): Especifica si, al entrenar, se usa el modo de precisión mixta, lo que permite entrenamiento más ligeros y más rápidos.
+
+### [Quantization]
+* **Quantize**: Permite cuantizar el modelo a **float16** o **int8** para la exportación.
 
 ### [LearningParams]
 
@@ -279,14 +284,14 @@ soportados:
 
 - --img_folder: Ruta obligatoria al directorio que contiene las imágenes sobre las que se realizará la inferencia.
 
-- --model_path: Ruta opcional al punto de control del modelo. Por defecto, se utiliza models/classificator/last_model que también es la salida de los modelos de clasificación. En detección, la inferencia se realiza desde la carpeta superior a weights. De esta forma, será el propio script el encargado de establecer la configuración correspondiente para la adecuada inferencia. Por ejemplo: models/object/detector/onnx_yolo_obj_det, siendo esta ruta la salida estándar del modelo en detección.
+- --model_path: Ruta opcional al punto de control del modelo. Por defecto, se utiliza models/classificator/model.onnx que también es la salida de los modelos de clasificación.
 
 - --task: Tipo de tarea a realizar, siendo la opción **c** clasificación y **d** detección. Por defecto, se utiliza c.
 
 Para ejecutar inferencia con el script inference.py:
 
 ~~~
-python inference.py --img_folder /ruta/a/tu/carpeta/de/imagenes --model_path ruta/a/salida/yolo --task d
+python inference.py --img_folder /ruta/a/tu/carpeta/de/imagenes --model_path ruta/a/salida/onnx --task d
 ~~~
 
 ## Preparación de las imágenes

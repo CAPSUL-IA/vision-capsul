@@ -34,6 +34,7 @@ RUN wget https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvis
 #Descargar onnxruntime-gpu Jetsons
 RUN wget https://github.com/ultralytics/assets/releases/download/v0.0.0/onnxruntime_gpu-1.20.0-cp310-cp310-linux_aarch64.whl -O /tmp/onnxruntime_gpu-1.20.0-cp310-cp310-linux_aarch64.whl
 
+
 RUN pip3 install wheel
 RUN pip3 install /tmp/*.whl
 RUN rm /tmp/*.whl
@@ -44,7 +45,8 @@ RUN cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.8.1/cusparselt-*-keyring.gp
 RUN apt-get update && apt-get -y install cusparselt-cuda-12
 
 
+RUN pip3 install --no-cache-dir uv
 # Install the required packages
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN uv pip install --no-cache-dir --system -r requirements.txt
 # Expose port 8000 for the application
 EXPOSE 8080

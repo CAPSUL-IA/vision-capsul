@@ -30,14 +30,24 @@ class RunParser:
         config = configparser.ConfigParser()
         config.read(fname)
         self.type = read(config, "Task", "Type", "classification")
+
         self.img_size = read(config, "Images", "Size", "256")
+        self.fraction = read(config, "Images", "Fraction", "1.0")
         self.transform = read(config, "Images", "DataAug", "gray")
+        
         self.model = read(config, "Model", "Name", "densenet121")
+        
         self.stratify = read(config, "Preprocess", "Stratify", "yes", is_boolean=True)
         self.multilabel = read(config, "Preprocess", "MultiLabel", "no", is_boolean=True)
+        
         self.pretrained = read(config, "ModelParams", "Pretrained", "yes", is_boolean=True)
         self.overwrite = read(config, "ModelParams", "Overwrite", "yes", is_boolean=True)
+        self.amp = read(config, "ModelParams", "Amp", "no", is_boolean=True)
+        
+        self.quantize = read(config, "Quantization", "Quantize", "")
+
         self.checkpoint = read(config, "Model", "Checkpoint", None)
+        
         self.batch = read(config, "LearningParams", "Batch", "32")
         self.epoch = read(config, "LearningParams", "Epoch", "25")
         self.eval_partition = read(config, "LearningParams", "EvalPartition", "0.2")

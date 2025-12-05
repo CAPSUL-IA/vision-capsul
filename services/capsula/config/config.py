@@ -2,7 +2,7 @@
 
 DATA_BASE_PATH = "data/"
 DATA_FINAL_PATH = "data/final_data"
-IMAGES_LABELS_PATH = "data/labels/"
+IMAGES_LABELS_PATH = "data/labels"
 IMAGES_PATH = "data/images"
 LOGS_PATH = "logs"
 MODELS_SAVE_PATH = "models/last_model"

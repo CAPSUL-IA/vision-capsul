@@ -6,109 +6,104 @@
 # Written by SolverIA <info@iasolver.com>, febrero 2024
 #
 import torch
-import numpy as np
-from torch.utils.data import DataLoader, Dataset
-from PIL import Image
-from torchvision import datasets, transforms
+import onnxruntime as ort
 
+from src.inference.inference_dataset import InferenceDataset
 
-class InferenceDataset(Dataset):
-    """
-    Custom dataset class to load images from a list of file paths.
-    Attributes:
-        image_paths (list of str): List of image file paths.
-        transform (callable, optional): Optional transform to be applied on a sample.
-    """
-
-    def __init__(self, image_list=None, image_paths=None, img_size: tuple = (28, 28)):
+class Timm_Inference:
+    def __init__(self, model: str, path_image:str, img_size:int, multilabel: bool = False, classes: list = range(80)):
         """
-        Initializes the dataset with image paths and an optional transform.
+        Initialize an instance of the YOLOv8 class.
 
         Args:
-            image_list (list of Pil Image): List of images with PIL format. It
-            is used for inference through Api. If this is None, image_paths
-            should not be None.
-            image_paths (list of str): List of image file paths. It is used for
-            inference of local data.
-            transform (callable, optional): Optional transform to be applied on a sample.
+            onnx_model (str): Path to the ONNX model.
+            input_image (str): Path to the images.
+            confidence_thres (float): Confidence threshold for filtering detections.
+            iou_thres (float): IoU threshold for non-maximum suppression.
         """
-        self.image_paths = image_paths
-        self.image_list = image_list
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.transform = transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.ToTensor(),
-        ])
+        self.model = model
+        self.path = path_image
+        self.img_size = img_size
+        self.multilabel = multilabel
 
-    def __len__(self):
-        """Returns the number of images in the dataset."""
-        if self.image_paths is not None:
-            return len(self.image_paths)
-        else:
-            return len(self.image_list)
+        # Load the class names from the COCO dataset
+        self.classes = classes
+        self.dataset = InferenceDataset(image_path=self.path, img_size=(self.img_size,self.img_size))
 
-    def __getitem__(self, idx):
+    def process_multiclass_output(self,outputs, label_encoding):
         """
-        Fetches the image at the given index in the dataset.
-
+        Processes the output of the model for a multiclass
+        classification task.
         Args:
-            idx (int): Index of the image to fetch.
-
+            outputs (torch.Tensor): The raw output from the model
+             for a batch of images.
+            label_encoding (dict): A dictionary mapping numerical
+             labels to their corresponding string representation.
         Returns:
-            torch.Tensor: Transformed image.
+            tuple: A tuple containing a list of labels for each image
+             and a tensor of probabilities associated with the
+             predicted label for each image.
         """
-        if self.image_paths is not None:
-            image_path = self.image_paths[idx]
-            image = Image.open(image_path).convert('RGB')
-        else:
-            image = self.image_list[idx].convert('RGB')
-        if self.transform:
-            image = self.transform(image)
-        return image
+        probs = torch.nn.functional.softmax(outputs, dim=1)
+        image_probs_list, preds = torch.max(probs, dim=1)
+        image_labels = [label_encoding[pred.item()] for pred in preds]
+        return [image_labels], [image_probs_list]
+
+    def process_multilabel_output(self, outputs, label_encoding):
+        """
+        Processes the output of the model for a multiclass
+        classification task.
+        Args:
+            outputs (torch.Tensor): The raw output from the model
+             for a batch of images.
+            label_encoding (dict): A dictionary mapping numerical
+             labels to their corresponding string representation.
+        Returns:
+            tuple: A tuple containing a list of labels for each image
+             and a tensor of probabilities associated with the
+             predicted label for each image.
+        """
+        image_labels, image_probs_list = [], []
+        probs = torch.nn.functional.sigmoid(outputs)
+        for probab in probs:
+            index_preds = [i for i,prob in enumerate(probab) if prob>0.5]
+            image_labels.append([label_encoding[i] for i in index_preds])
+            image_probs_list.append([probab[i] for i in index_preds])
+
+        return image_labels, image_probs_list
+
+    def postprocess(self, outputs):
+        final_preds, final_probs = [], []
+        for out in outputs:
+            out = torch.tensor(out[0], dtype=torch.float32)
+            if self.multilabel:
+                labels, probs = self.process_multilabel_output(out,
+                                                          self.classes)
+            else:
+                labels, probs = self.process_multiclass_output(out,
+                                                      self.classes)
+            final_preds.extend(labels)
+            final_probs.extend(probs)
+        return final_preds, final_probs
+
+    def show_results(self, infs, probs):    
+        for i in range(len(self.dataset)):
+            for j in range(len(infs[i])):
+                cls = infs[i][j]
+                prob = round(probs[i][j].item(), 4)
+                img_name = self.dataset.imgs[i]
+                print(f"Para la imagen {img_name} el modelo ha predicho la clase {cls} con una confianza de {prob}.")
 
 
-def process_multiclass_output(outputs, label_encoding):
-    """
-    Processes the output of the model for a multiclass
-    classification task.
-    Args:
-        outputs (torch.Tensor): The raw output from the model
-         for a batch of images.
-        label_encoding (dict): A dictionary mapping numerical
-         labels to their corresponding string representation.
-    Returns:
-        tuple: A tuple containing a list of labels for each image
-         and a tensor of probabilities associated with the
-         predicted label for each image.
-    """
-    probs = torch.nn.functional.softmax(outputs, dim=1)
-    image_probs_list, preds = torch.max(probs, dim=1)
-    image_labels = [label_encoding[pred.item()] for pred in preds]
-    return image_labels, image_probs_list
+    def main(self):
 
-def process_multilabel_output(outputs, label_encoding):
-    """
-    Processes the output of the model for a multiclass
-    classification task.
-    Args:
-        outputs (torch.Tensor): The raw output from the model
-         for a batch of images.
-        label_encoding (dict): A dictionary mapping numerical
-         labels to their corresponding string representation.
-    Returns:
-        tuple: A tuple containing a list of labels for each image
-         and a tensor of probabilities associated with the
-         predicted label for each image.
-    """
-    image_labels, image_probs_list = [], []
-    probs = torch.nn.functional.sigmoid(outputs)
-    for probab in probs:
-        index_preds = [i for i,prob in enumerate(probab) if prob>0.5]
-        image_labels.append([label_encoding[i] for i in index_preds])
-        image_probs_list.append([probab[i] for i in index_preds])
-
-    return image_labels, image_probs_list
-
+        provider = ["CUDAExecutionProvider","CPUExecutionProvider"]
+        session = ort.InferenceSession(self.model, providers =provider)
+        
+        outputs = [session.run(None, {session.get_inputs()[0].name: self.dataset[i]}) for i in range(len(self.dataset))]       
+        infs, probs = self.postprocess(outputs)
+       
+        self.show_results(infs, probs)
 
 def do_inference(model, dataloader, label_encoding):
     """
@@ -139,3 +134,4 @@ def do_inference(model, dataloader, label_encoding):
             final_preds.extend(labels)
             final_probs.extend(probs)
     return final_preds, final_probs
+

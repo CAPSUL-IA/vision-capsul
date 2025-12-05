@@ -4,8 +4,6 @@ import pandas as pd
 from abc import ABCMeta, abstractmethod
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-import matplotlib.pyplot as plt
 
 class IModel(metaclass=ABCMeta):
     def __init__(self, model, optimizer=None, criterion=None, scheduler=None):
@@ -17,22 +15,6 @@ class IModel(metaclass=ABCMeta):
     @abstractmethod
     def load_model(self):
         pass
-
-    def generate_confusion_matrix(self, all_outputs, all_labels):
-        predicted = torch.max(all_outputs, 1)[1]
-        labels = all_labels.argmax(dim=1)
-        
-        cm = confusion_matrix(labels.cpu().numpy(), predicted.cpu().numpy())
-
-        class_names = [k for k, v in sorted(self.label_encoding.items(), key=lambda x: x[1])]
-
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
-        disp.plot(cmap='Blues', values_format='d')
-        plt.title('Confusion Matrix')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.path,'confusion_matrix.png'), dpi=300, bbox_inches='tight')
-        plt.close()
 
     def run_batch(self, dataloader, is_eval: bool):
         """
@@ -52,70 +34,49 @@ class IModel(metaclass=ABCMeta):
         model = self.model
         optimizer = self.optimizer
         criterion = self.criterion
+        
         if is_eval:
             model.eval()
             description = "Evaluating"
         else:
             model.train()
             description = "Training set"
+        
         epoch_loss = 0.0
         all_outputs = []
         all_labels = []
         correct, total = 0, 0
+
         # in evaluation no need of updating gradients
         with torch.set_grad_enabled(not is_eval):
             for batch in tqdm(dataloader, desc=description, unit="batch"):
                 inputs, targets = batch
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
+               
+                with torch.amp.autocast(device_type = "cuda", enabled = self.amp):
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
                 total += targets.size(0)
+                
                 if not is_eval:
-                    loss.backward()
-                    
+                    loss.backward()    
                     optimizer.step()
-                    
                     optimizer.zero_grad()
-                    
                     epoch_loss += loss.item()
-                if is_eval and not self.multilabel:
-                    _, predicted = torch.max(outputs.data, 1)
-                    labels = targets.argmax(dim=1)
-                    correct += (predicted == labels).sum().item()
-                
-                all_outputs.append(outputs.detach())
-                all_labels.append(targets.detach())
-                
-        all_outputs = torch.cat(all_outputs)
-        all_labels = torch.cat(all_labels)
 
-        if not self.multilabel or not is_eval:
-            #Métricas de evaluación
-            if is_eval:
-                self.generate_confusion_matrix(all_outputs, all_labels)
-                return correct / total 
-            #Perdida de entrenamiento
-            return epoch_loss / total
+                if is_eval:
+                    all_outputs.append(outputs.detach())
+                    all_labels.append(targets.detach()) 
 
-        predictions = (torch.sigmoid(all_outputs) > 0.5).float()
-        
-        tp = (predictions * all_labels).sum().item()
-        fp = (predictions * (1 - all_labels)).sum().item()
-        fn = ((1 - predictions) * all_labels).sum().item()
-        
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-        
-        metrics = {
-            'precision': precision,
-            'recall': recall,
-            'f1': f1
-        }
+        if is_eval:
+            all_outputs = torch.cat(all_outputs)
+            all_labels = torch.cat(all_labels)
+            
+            return self.calculate_metrics_eval(all_outputs, all_labels)
 
-        return metrics
-        
+        return epoch_loss / total
+               
     
     @abstractmethod
     def train(self, dataset):
@@ -145,24 +106,9 @@ class IModel(metaclass=ABCMeta):
             print(f"Perdida: {train_loss}\n")
             val_metrics = self.run_batch(dataloader=val_dataloader,is_eval=True)
             
-            if not self.multilabel:
-                val_metric = val_metrics
-                print(f"Precision: {val_metric}\n")
-                metrics.append({
-                    "epoch": epoch + 1,
-                    "train_loss": train_loss,
-                    "val_accuracy": val_metric
-                })
-            else:
-                val_metric = val_metrics["f1"]
-                print(f"F1 Score: {val_metric}\n")
-                metrics.append({
-                    "epoch": epoch + 1,
-                    "train_loss": train_loss,
-                    "val_precision": val_metrics["precision"],
-                    "val_recall": val_metrics["recall"],
-                    "val_f1": val_metrics["f1"]
-                })
+            metrics_validation, val_metric = self.get_metrics_eval(val_metrics, epoch, train_loss)
+            metrics.append(metrics_validation)
+
             if val_metric > best_val_metric:
                 not_improve = 0
                 best_val_metric = val_metric
@@ -188,10 +134,6 @@ class IModel(metaclass=ABCMeta):
         self.model.eval()
 
         final_val_metrics = self.run_batch(dataloader=val_dataloader, is_eval=True)
-        print("Resultados finales:")
-        if not self.multilabel:
-            print(f"Precision: {final_val_metrics}")
-        else:
-            print(f"Precision:  {final_val_metrics['precision']}")
-            print(f"Recall: {final_val_metrics['recall']}")
-            print(f"F1 Score: {final_val_metrics['f1']}")
+        self.show_results(final_val_metrics)
+
+        self.export_to_onnx(self.model)

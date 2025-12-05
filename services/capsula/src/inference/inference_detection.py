@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 class YOLOv8_Inference:
-    def __init__(self, model: str, path_image:str, image: List[str], conf: float, iou: float, shape:int, classes: list = range(80)):
+    def __init__(self, model: str, path_image:str, shape:int, conf: float, iou: float,  classes: list = range(80)):
         """
         Initialize an instance of the YOLOv8 class.
 
@@ -20,11 +20,11 @@ class YOLOv8_Inference:
         """
         self.model = model
         self.path = path_image
-        self.image = image
+        self.image = [file for file in os.listdir(self.path) if
+                 file.lower().endswith(('.png', '.jpg', '.jpeg'))] 
         self.conf = conf
         self.iou = iou
 
-        # Load the class names from the COCO dataset
         self.classes = classes
 
         # Generate a color palette for the classes
