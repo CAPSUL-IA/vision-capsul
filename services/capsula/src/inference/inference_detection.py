@@ -1,42 +1,59 @@
-from typing import List, Tuple
-
-import cv2
-import matplotlib.pyplot as plt
-import onnxruntime as ort
 import os
+import cv2
+import torch
+
 import numpy as np
-import time
+import onnxruntime as ort
+import matplotlib.pyplot as plt
+
+from pathlib import Path
+from typing import List, Tuple, Dict
 
 class YOLOv8_Inference:
-    def __init__(self, model: str, path_image:str, shape:int, conf: float, iou: float,  classes: list = range(80)):
+    def __init__(self, model: str, path_image:str, shape:int, conf: float, iou: float,
+            classes: list = range(80), batch_size: int = 64):
         """
-        Initialize an instance of the YOLOv8 class.
+        Initialize the YOLOv8 inference class.
 
         Args:
-            onnx_model (str): Path to the ONNX model.
-            input_image (str): Path to the images.
-            confidence_thres (float): Confidence threshold for filtering detections.
-            iou_thres (float): IoU threshold for non-maximum suppression.
+            model (str): Path to the ONNX model.
+            path_image (str): Directory containing input images.
+            shape (int): Input size for the model.
+            conf (float): Confidence threshold for filtering detections.
+            iou (float): IoU threshold for non-maximum suppression (NMS).
+            classes (list): List of class names or indices.
+            draw(bool): draw the detections.
+            batch_size(int): Number of images to process per batch.
         """
+
         self.model = model
         self.path = path_image
-        self.image = [file for file in os.listdir(self.path) if
-                 file.lower().endswith(('.png', '.jpg', '.jpeg'))] 
+
+        if self.path:
+            self.image_files = sorted([file for file in os.listdir(self.path) if
+                     file.lower().endswith(('.png', '.jpg', '.jpeg'))]) 
         self.conf = conf
         self.iou = iou
-
         self.classes = classes
+        self.batch_size = batch_size
 
-        # Generate a color palette for the classes
         self.color_palette = self.get_colors()
         self.input_width, self.input_height = shape, shape
         
-        self.img = [cv2.imread(os.path.join(self.path,img)) for img in self.image]
-        self.img_height, self.img_width = self.get_shape()
+        providers = ["CUDAExecutionProvider","CPUExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
+        self.session = ort.InferenceSession(self.model, providers = providers)
 
-    def get_shape(self):
+    def get_shape(self, batch_images: List[np.ndarray]):
+        """
+        Retrieve the original dimensions of a batch of images.
+
+        Returns:
+            tuple:
+                - list[int]: Heights of input images.
+                - list[int]: Widths of input images.
+        """
         height, width=[],[]
-        for img in self.img:
+        for img in batch_images:
             h,w=img.shape[:2]
             height.append(h)
             width.append(w)
@@ -44,20 +61,33 @@ class YOLOv8_Inference:
         return height, width
 
     def get_colors(self):
+        """
+        Generate a distinct RGB color for each class.
+
+        Returns:
+            list[tuple[int, int, int]]: List of RGB color tuples.
+        """
         cmap = plt.get_cmap('tab20')
         colors = [cmap(i % cmap.N) for i in range(len(self.classes))]
-        
         colors = [(int(r*255),int(g*255),int(b*255)) for r,g,b,_ in colors]
         return colors
         
     def add_padding(self, img: np.ndarray, new_shape: Tuple[int, int] = (640, 640)) -> Tuple[np.ndarray, Tuple[int, int]]:
         """
-        Computes the image so it has the aspect yolo uses for training.
+        Apply letterboxing to maintain aspect ratio while resizing the image.
+
+        Args:
+            img (np.ndarray): Input image.
+            new_shape (tuple[int, int]): Target shape after padding.
+
+        Returns:
+            tuple:
+                - np.ndarray: Resized and padded image.
+                - tuple[int, int]: Amount of padding (top, left) added.
         """
         shape = img.shape[:2]
         ratio_aspect = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
 
-        # Compute padding
         new_unpad = int(round(shape[1] * ratio_aspect)), int(round(shape[0] * ratio_aspect))
         pad_to_addw, pad_to_addh = (new_shape[1] - new_unpad[0]) / 2, (new_shape[0] - new_unpad[1]) / 2  # wh padding
 
@@ -70,13 +100,20 @@ class YOLOv8_Inference:
 
     def draw_detections(self, img: np.ndarray, box: List[float], score: float, class_id: int) -> None:
         """
-        Return the image with the bounding boxes.
+        Draw a bounding box and label on the image.
+
+        Args:
+            img (np.ndarray): Image where the detection will be drawn.
+            box (list[float]): Bounding box [x, y, w, h].
+            score (float): Confidence score.
+            class_id (int): Predicted class ID.
+
+        Returns:
+            np.ndarray: Image with the detection drawn.
         """
-        # Coordinates
-        x0, y0, w, h = box
-        cv2.rectangle(img, (int(x0), int(y0)), (int(x0 + w), int(y0 + h)), self.color_palette[class_id], 2)
+        x0, y0, w, h = map(int, box) 
+        cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), self.color_palette[class_id], 2)
         
-        #Draw label with its confidence
         label = f"{self.classes[class_id]}: {score:.2f}"
         (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         label_x = x0
@@ -87,19 +124,23 @@ class YOLOv8_Inference:
         cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
         return img
-        
-    def preprocess(self) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
+
+    def preprocess(self, batch_images: List[np.ndarray]) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
         """
-        Tranform the image for making inference
+        Preprocess a batch of images for model inference.
+        Includes: color conversion, letterboxing, normalization, and layout change.
+
+        Returns:
+            tuple:
+                - list[np.ndarray]: Preprocessed images in model input format.
+                - list[tuple[int, int]]: Padding applied to each image.
         """
         image_data, pad = [],[]
-        for i in range(len(self.image)):
-            img = cv2.cvtColor(self.img[i], cv2.COLOR_BGR2RGB)
+        for img in batch_images:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            #Padding
             img, p = self.add_padding(img, (self.input_width, self.input_height))
 
-            # Normalize, transpose and expand
             img_data = np.array(img) / 255.0
             img_data = np.transpose(img_data, (2, 0, 1))
             img_data = np.expand_dims(img_data, axis=0).astype(np.float32)
@@ -108,68 +149,123 @@ class YOLOv8_Inference:
             pad.append(p)
         return image_data, pad
 
-    def postprocess(self, output: List[List[np.ndarray]], pad: List[Tuple[int, int]]) -> List[np.ndarray]:
+    def nms_numpy(self, boxes, scores, iou_threshold):
         """
-        Perform post-processing on the model's output to extract and visualize detections.
+        Non-maximum suppression NumPy.
+        """
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
 
-        This method processes the raw model output to extract bounding boxes, scores, and class IDs.
-        It applies non-maximum suppression to filter overlapping detections and draws the results on the input image.
+        areas = (x2 - x1) * (y2 - y1)
+        order = scores.argsort()[::-1]
 
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            inter = w * h
+            ovr = inter / (areas[i] + areas[order[1:]] - inter)
+
+            inds = np.where(ovr <= iou_threshold)[0]
+            order = order[inds + 1]
+
+        return keep
+
+    def detect_and_nms(self, out_i, pad_item, img_shape):
+        h, w = img_shape
+        scale = min(self.input_height / h, self.input_width / w)
+        pad_top, pad_left = pad_item
+
+        boxes_raw = out_i[:, :4]
+        class_scores = out_i[:, 4:]
+
+        class_ids = np.argmax(class_scores, axis=1)
+        scores = class_scores[np.arange(class_scores.shape[0]), class_ids]
+
+        mask = scores >= self.conf
+        if not mask.any():
+            return []
+
+        boxes_raw = boxes_raw[mask]
+        scores = scores[mask]
+        class_ids = class_ids[mask]
+
+        # Coordenadas originales
+        cx = (boxes_raw[:, 0] - pad_left) / scale
+        cy = (boxes_raw[:, 1] - pad_top) / scale
+        bw = boxes_raw[:, 2] / scale
+        bh = boxes_raw[:, 3] / scale
+
+        left = cx - bw / 2
+        top = cy - bh / 2
+        right = left + bw
+        bottom = top + bh
+
+        boxes_xyxy = np.stack([left, top, right, bottom], axis=1)
+
+        # NMS en NumPy
+        keep = self.nms_numpy(boxes_xyxy, scores, self.iou)
+        boxes_final = boxes_xyxy[keep]
+        scores_final = scores[keep]
+        class_ids_final = class_ids[keep]
+
+        # Convertir a formato (left, top, w, h)
+        boxes_out = np.stack([
+            boxes_final[:, 0],
+            boxes_final[:, 1],
+            boxes_final[:, 2] - boxes_final[:, 0],
+            boxes_final[:, 3] - boxes_final[:, 1]
+        ], axis=1)
+
+        return [(boxes_out[i], float(scores_final[i]), int(class_ids_final[i])) for i in range(len(keep))]
+
+    def postprocess(self, output: List[List[np.ndarray]], pad: List[Tuple[int, int]], batch_images: List[np.ndarray]) -> Dict[str, List[Dict]]:
+        """
+        Convert raw model output into final bounding boxes using NMS.
         Args:
-            input_image (np.ndarray): The input image.
-            output (List[np.ndarray]): The output arrays from the model.
-            pad (Tuple[int, int]): Padding values (top, left) used during letterboxing.
+            output (list): Raw outputs from the ONNX model.
+            pad (list[tuple]): Padding added during preprocessing.
+            batch_images(list[np.ndarray]): Batch of original images.
+        Returns:
+            - None
+        """
+        batch_output = np.transpose(output[0], (0, 2, 1))  # B x N x 85
+        for i, img in enumerate(batch_images):
+            detections = self.detect_and_nms(batch_output[i], pad[i], img.shape[:2])
+
+            for box, score, class_id in detections:
+                img = self.draw_detections(img, box.tolist(), score, class_id)
+            batch_images[i] = img
+
+    def main(self):
+        """
+        Run the complete inference pipeline in batches:
+        preprocess, ONNX inference and postprocess.
 
         Returns:
-            (np.ndarray): The input image with detections drawn on it.
+           - None 
         """
-        for out in range(len(output)):
-            # Transpose and squeeze the output to match the expected shape
-            outputs = np.transpose(np.squeeze(output[out][0]))
 
-            # Get the number of rows in the outputs array
-            rows = outputs.shape[0]
+        for i in range(0, len(self.image_files), self.batch_size):
+            batch_files = self.image_files[i:i+self.batch_size]
+            self.img = [cv2.imread(os.path.join(self.path,f)) for f in batch_files]
 
-            # Lists to store the bounding boxes, scores, and class IDs of the detections
-            boxes = []
-            scores = []
-            
-            # Calculate the scaling factors for the bounding box coordinates
-            scale = min(self.input_height / self.img_height[out], self.input_width / self.img_width[out])
-            outputs[:, 0] -= pad[out][1]
-            outputs[:, 1] -= pad[out][0]
+            img_data, pad = self.preprocess(self.img)
 
-            for i in range(rows):
-                #Score must be higher than threshold confidence
-                score = outputs[i][4:][0]
-                if score >= self.conf:
-                    x, y, w, h = outputs[i][0], outputs[i][1], outputs[i][2], outputs[i][3]
+            batch_input = np.concatenate(img_data, axis=0)
+            outputs = self.session.run(None, {self.session.get_inputs()[0].name: batch_input})
 
-                    left = int((x - w / 2) / scale)
-                    top = int((y - h / 2) / scale)
-                    width = int(w / scale)
-                    height = int(h / scale)
+            self.postprocess(outputs, pad, self.img)
 
-                    scores.append(score)
-                    boxes.append([left, top, width, height])
-            correct = cv2.dnn.NMSBoxes(boxes, scores, self.conf, self.iou)
-            #Draw the detections
-            for i in correct:
-                box = boxes[i]
-                score = scores[i]
-                self.img[out] = self.draw_detections(self.img[out], box, score, 0)
-
-    def main(self) -> np.ndarray:
-        """
-        Prepare the image, run inference and return the result
-        """
-        os.makedirs(f"{self.path}/result/",exist_ok=True)
-        provider = ["CUDAExecutionProvider","CPUExecutionProvider"]
-        session = ort.InferenceSession(self.model, providers =provider)
-        img_data, pad = self.preprocess()
-        
-        outputs = [session.run(None, {session.get_inputs()[0].name: img_data[i]}) for i in range(len(img_data))]       
-        self.postprocess(outputs, pad)
-        
-        for i in range(len(self.img)):
-            cv2.imwrite(os.path.join(f"{self.path}/result/",self.image[i]),self.img[i])
+            os.makedirs(f"{self.path}/result/",exist_ok=True)
+            for j, f in enumerate(batch_files):
+                cv2.imwrite(os.path.join(f"{self.path}/result/", f), self.img[j])

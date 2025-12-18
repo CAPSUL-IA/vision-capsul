@@ -5,12 +5,10 @@
 # Proprietary and confidential
 # Written by SolverIA <info@iasolver.com>, febrero 2024
 #
-import yaml
 import json
 import argparse
 import os
 import sys
-import torch
 
 from src.utils.utils import RunParser
 from src.inference.inference_classification import Timm_Inference
@@ -18,10 +16,10 @@ from src.inference.inference_detection import YOLOv8_Inference
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Run image classification inference.")
-    parser.add_argument('--img_folder', type=str, help='Path to the folder containing images.',required=True)
-    parser.add_argument('--model_path', type=str, default='models/classificator/model.onnx',
-                        help='Path to the model checkpoint.')
-    parser.add_argument('--task', type=str, default='c',
+    parser.add_argument('-i','--img_folder', type=str, help='Path to the folder containing images.',required=True)
+    parser.add_argument('-m','--model_path', type=str, default='models/classificator/model.onnx',
+                        help='Path to the onnx model.')
+    parser.add_argument('-t','--task', type=str, default='c',
                         help='Classify or detect. Write c to classify and d to detect.')
     return parser.parse_args()
 
