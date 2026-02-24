@@ -1,3 +1,4 @@
 .idea
 services/database/persistence
 services/vscode/*
+services/capsula/models/*

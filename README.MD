@@ -1,6 +1,6 @@
 # Capsul-IA vision
 
-A breaf tutorial on how to use.
+A brief tutorial on how to use.
 
 ## Installation
 
